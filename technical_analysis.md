@@ -129,6 +129,133 @@ log local0. "$::IRULE_NAME v$::IRULE_VERSION: Redirecting to $redirect_location"
 
 **Technical Impact:** Structured logging enables operational monitoring and troubleshooting.
 
+## 🔒 **Security Headers Breakdown**
+
+Here's what each security header in the iRule does:
+
+### **1. Strict-Transport-Security (HSTS)**
+```
+Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+```
+
+**Purpose:** Forces browsers to only connect via HTTPS
+- **`max-age=31536000`**: Browser remembers for 1 year (31,536,000 seconds)
+- **`includeSubDomains`**: Applies to all subdomains (api.example.com, www.example.com)
+- **`preload`**: Eligible for browser preload lists (hardcoded HTTPS-only)
+
+**Protects Against:**
+- Protocol downgrade attacks
+- Man-in-the-middle attacks on HTTP
+- Accidental HTTP connections
+
+**Real Impact:** After first HTTPS visit, browser will **never** allow HTTP connections to your domain, even if user types `http://`
+
+---
+
+### **2. X-Frame-Options**
+```
+X-Frame-Options: DENY
+```
+
+**Purpose:** Prevents your site from being embedded in iframes
+- **`DENY`**: Completely blocks iframe embedding
+- **Alternative:** `SAMEORIGIN` (allows same-domain iframes)
+
+**Protects Against:**
+- Clickjacking attacks (invisible iframe overlays)
+- UI redressing attacks
+- Malicious embedding in attacker websites
+
+**Real Impact:** Your site cannot be loaded inside `<iframe>`, `<frame>`, `<object>`, or `<embed>` tags on other websites
+
+---
+
+### **3. X-Content-Type-Options**
+```
+X-Content-Type-Options: nosniff
+```
+
+**Purpose:** Prevents browsers from guessing file types
+- Browser must respect the `Content-Type` header exactly
+- No MIME type "sniffing" allowed
+
+**Protects Against:**
+- MIME confusion attacks
+- File upload XSS (uploading HTML disguised as images)
+- Content type spoofing
+
+**Real Impact:** If server says it's `text/plain`, browser won't execute it as JavaScript even if it contains JS code
+
+---
+
+### **4. X-XSS-Protection**
+```
+X-XSS-Protection: 1; mode=block
+```
+
+**Purpose:** Enables browser's built-in XSS filtering
+- **`1`**: Enable XSS filtering
+- **`mode=block`**: Block the page entirely (don't try to sanitize)
+
+**Protects Against:**
+- Reflected XSS attacks
+- Some types of DOM-based XSS
+
+**Real Impact:** Browser detects potential XSS and blocks page rendering instead of trying to "clean" the malicious code
+
+**Note:** This header is **legacy** - modern browsers use Content Security Policy (CSP) instead, but still provides defense-in-depth for older browsers.
+
+---
+
+### **5. Referrer-Policy**
+```
+Referrer-Policy: strict-origin-when-cross-origin
+```
+
+**Purpose:** Controls what referrer information is sent with requests
+- **`strict-origin-when-cross-origin`**: 
+  - Same-origin requests: Send full URL
+  - Cross-origin HTTPS→HTTPS: Send only origin (`https://example.com`)
+  - Cross-origin HTTPS→HTTP: Send nothing (security downgrade)
+
+**Protects Against:**
+- Information leakage through referrer headers
+- Privacy violations
+- Sensitive URL parameters being leaked
+
+**Real Impact:** Prevents URLs like `https://yoursite.com/admin/user/12345?token=secret` from being leaked to external sites in referrer headers
+
+---
+
+## 🎯 **Combined Security Effect**
+
+When a user gets redirected from HTTP to HTTPS, they receive **all 5 headers**, creating multiple layers of protection:
+
+1. **Future visits forced to HTTPS** (HSTS)
+2. **Cannot be embedded maliciously** (X-Frame-Options)
+3. **File types strictly enforced** (X-Content-Type-Options)
+4. **XSS filtering enabled** (X-XSS-Protection)
+5. **Referrer information controlled** (Referrer-Policy)
+
+## 🔍 **Real-World Example**
+
+```bash
+curl -I http://example.com/
+```
+
+**Response with headers:**
+```
+HTTP/1.0 308 Permanent Redirect
+Location: https://example.com/
+Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+X-Frame-Options: DENY
+X-Content-Type-Options: nosniff
+X-XSS-Protection: 1; mode=block
+Referrer-Policy: strict-origin-when-cross-origin
+```
+
+**Result:** Browser gets security policies **during the redirect**, before even reaching the HTTPS site. This provides **early security enforcement** at the network level! 🛡️
+
 ## Implementation Architecture
 
 ### Code Organization
