@@ -1,6 +1,6 @@
 # F5 HTTPS Redirect iRule Update
 
-F5's old [**_sys_https_redirect**](https://my.f5.com/manage/s/article/K10090418) iRule was simple and got the job done, but it's starting to show its age. It has some issues handling today's web apps:
+F5's old [**_sys_https_redirect**](https://my.f5.com/manage/s/article/K10090418) iRule is simple and gets the job done, but it's starting to show its age. It has some issues handling today's web apps:
 
 1. **It always sends a 302 redirect.** This changes POST requests to GET, breaking things like form submissions. We really want to use a 308 to preserve the request method.
 2. **It chokes on IPv6 host headers.** If you have an IPv6 address like `[2001:db8::1]:8080`, the `getfield` command used to parse out the host will fail. We need a smarter way to handle that. 
