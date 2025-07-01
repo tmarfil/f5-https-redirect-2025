@@ -18,3 +18,6 @@ test/
 # Temporary files
 *.tmp
 *.temp
+
+# Commit message
+commit-message.md
