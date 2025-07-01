@@ -1,275 +1,138 @@
-# F5 HTTPS Redirect 2025 v0.01.1 - Deployment Guide
+# F5 HTTPS Redirect iRule Update
 
-## Overview
+F5's old [**_sys_https_redirect**](https://my.f5.com/manage/s/article/K10090418) iRule was simple and got the job done, but it's starting to show its age. It has some issues handling today's web apps:
 
-This guide provides step-by-step instructions for deploying and configuring the F5 HTTPS Redirect 2025 v0.01.1 iRule on F5 BIG-IP systems.
+1. **It always sends a 302 redirect.** This changes POST requests to GET, breaking things like form submissions. We really want to use a 308 to preserve the request method.
+2. **It chokes on IPv6 host headers.** If you have an IPv6 address like `[2001:db8::1]:8080`, the `getfield` command used to parse out the host will fail. We need a smarter way to handle that. 
+3. **There's no way to make exceptions.** Sometimes you need HTTP for things like Let's Encrypt validation or health checks. The iRule redirects everything to HTTPS unconditionally.
+4. **It doesn't set any security headers.** The redirect response is pretty bare-bones. It's a missed chance to enable some extra protections.
+5. **Everything is hardcoded.** Want to change something? You have to edit the iRule directly. Not the most admin-friendly.
+6. **Zero visibility.** If something isn't working right, good luck figuring out why. The iRule doesn't log anything for troubleshooting.
 
-## Prerequisites
+## How HTTPS Redirect 2025 solves this
 
-### System Requirements
-- F5 BIG-IP running TMOS version 11.4 or later
-- iControl REST API access with administrative privileges
-- Virtual server configured for HTTP traffic (typically port 80)
-- Corresponding HTTPS virtual server (typically port 443)
+Here's how the new iRule tackles these issues:
 
-### Network Requirements
-- Backend pool configured for exempted paths (health checks, ACME challenges)
-- DNS resolution for target domains
-- Network connectivity for HTTPS redirection testing
+### Use a 308 redirect and preserve the request method
 
-### Access Requirements
-- SSH access to F5 BIG-IP management interface
-- Administrative credentials for iControl REST API
-- Access to log files for debugging (`/var/log/ltm`)
-
-## Configuration
-
-### User-Configurable Parameters
-
-#### Redirect Behavior
 ```tcl
-set redirect_code 308    # HTTP status code (308 recommended, 301 for legacy)
-set https_port 443       # Target HTTPS port (443 for standard)
+set redirect_code 308  
+HTTP::respond $redirect_code Location $redirect_location
 ```
 
-#### Exemption Paths
+A 308 status tells the browser "this resource has permanently moved to a new location, and you should use the same request method you used on the original request." Perfect for our needs.
+
+### Handle IPv6 addresses properly
+
+```tcl
+if {[string match "\[*\]*" $host]} {
+    set ipv6_end [string first "\]" $host]
+    set ipv6_addr [string range $host 1 [expr {$ipv6_end - 1}]]
+    # Complex IPv6 + port parsing logic
+}  
+```
+
+We check if the host header starts with a bracket `[`, which indicates an IPv6 address. If it does, we find the closing bracket and extract everything between them as the IPv6 address. Then we can handle the port separately.
+
+### Allow exceptions for certain paths
+
 ```tcl
 set exemption_paths {
-    "/.well-known/acme-challenge/*"    # Let's Encrypt ACME challenges
-    "/health"                          # Health check endpoint
-    "/status"                          # Status monitoring
-    "/ping"                            # Ping endpoint
-    "/api/webhook/*"                   # Webhook endpoints (wildcard)
-}
-```
-
-### Customization Guidelines
-
-#### Adding Exemption Paths
-1. **Exact Paths**: Use `/specific/path` for exact matches
-2. **Wildcard Patterns**: Use `/path/*` for directory matching
-3. **Case Sensitivity**: Paths are case-sensitive (`/Health` ≠ `/health`)
-
-#### Common Exemption Patterns
-- Health checks: `/health`, `/healthz`, `/status`
-- Monitoring: `/metrics`, `/stats`, `/ping`
-- Webhooks: `/api/webhook/*`, `/hooks/*`
-- Legacy APIs: `/api/v1/legacy/*`
-
-## Deployment Procedure
-
-### Step 1: iRule Creation
-```bash
-# Using iControl REST API
-curl -k -u admin:password -X POST \
-  https://your-bigip/mgmt/tm/ltm/rule \
-  -H "Content-Type: application/json" \
-  -d '{"name":"https_redirect_2025","apiAnonymous":"[iRule code here]"}'
-```
-
-### Step 2: Virtual Server Attachment
-```bash
-# Attach to HTTP virtual server
-curl -k -u admin:password -X PATCH \
-  https://your-bigip/mgmt/tm/ltm/virtual/your-http-vs \
-  -H "Content-Type: application/json" \
-  -d '{"rules":["/Common/https_redirect_2025"]}'
-```
-
-### Step 3: Configuration Verification
-```bash
-# Verify iRule attachment
-curl -k -u admin:password \
-  https://your-bigip/mgmt/tm/ltm/virtual/your-http-vs?expandSubcollections=true
-```
-
-## Testing Procedures
-
-### Basic Functionality Tests
-
-#### Test 1: Standard Redirect
-```bash
-curl -I http://your-domain.com/
-# Expected: 308 Permanent Redirect
-# Expected: Location: https://your-domain.com/
-```
-
-#### Test 2: Method Preservation
-```bash
-curl -I -X POST http://your-domain.com/api/data
-# Expected: 308 Permanent Redirect (not 302)
-# Expected: Location: https://your-domain.com/api/data
-```
-
-#### Test 3: Query String Preservation
-```bash
-curl -I "http://your-domain.com/search?q=test&page=1"
-# Expected: Location: https://your-domain.com/search?q=test&page=1
-```
-
-### Exemption Path Tests
-
-#### Test 4: Health Check Exemption
-```bash
-curl -I http://your-domain.com/health
-# Expected: 200 OK (or backend response)
-# Expected: No redirect headers
-```
-
-#### Test 5: ACME Challenge Exemption
-```bash
-curl -I http://your-domain.com/.well-known/acme-challenge/test-token
-# Expected: Backend response (not redirect)
-```
-
-### Security Header Validation
-
-#### Test 6: Security Headers Present
-```bash
-curl -I http://your-domain.com/test
-# Expected headers:
-# Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-# X-Frame-Options: DENY
-# X-Content-Type-Options: nosniff
-# X-XSS-Protection: 1; mode=block
-# Referrer-Policy: strict-origin-when-cross-origin
-```
-
-## Monitoring and Troubleshooting
-
-### Log Monitoring
-```bash
-# Monitor iRule activity
-tail -f /var/log/ltm | grep "F5_HTTPS_Redirect_2025"
-
-# Example log entries:
-# Exemption: "Exemption matched '/health' for /health - allowing passthrough"
-# Redirect: "Redirecting to https://domain.com/path with code 308"
-```
-
-### Common Issues
-
-#### Issue 1: Redirects Not Working
-**Symptoms**: HTTP requests not redirected to HTTPS
-**Diagnosis**: 
-- Verify iRule attached to HTTP virtual server (not HTTPS)
-- Check virtual server receiving HTTP traffic
-- Confirm iRule syntax is valid
-
-**Resolution**:
-```bash
-# Check virtual server configuration
-tmsh list ltm virtual your-http-vs rules
-```
-
-#### Issue 2: Exemptions Not Working
-**Symptoms**: Health checks or ACME challenges being redirected
-**Diagnosis**:
-- Verify exact path matching (case-sensitive)
-- Check wildcard pattern syntax
-- Confirm backend pool configuration
-
-**Resolution**:
-- Review exemption pattern syntax
-- Test with exact path strings
-- Check log entries for pattern matching
-
-#### Issue 3: IPv6 Redirect Failures
-**Symptoms**: Malformed redirect URLs with IPv6 addresses
-**Diagnosis**:
-- Check host header format `[::1]:8080`
-- Verify IPv6 parsing logic
-
-**Resolution**:
-- Ensure proper IPv6 bracket notation
-- Test with various IPv6 formats
-
-## Performance Considerations
-
-### Resource Usage
-- **CPU Impact**: Minimal overhead for pattern matching (~1-2ms per request)
-- **Memory Usage**: Negligible additional memory consumption
-- **Network Impact**: Single redirect hop, no persistent connections
-
-### Scaling Factors
-- **Exemption Patterns**: Linear performance impact (5-10 patterns recommended)
-- **Request Volume**: No significant impact on high-traffic virtual servers
-- **Logging**: Production deployments should disable debug logging
-
-### Production Optimizations
-1. Remove debug logging statements
-2. Limit exemption patterns to necessary paths only
-3. Consider iRule priority for multiple iRule environments
-
-## Security Considerations
-
-### Security Headers Impact
-- **HSTS**: Enforces HTTPS for 1 year, includes subdomains
-- **X-Frame-Options**: Prevents clickjacking attacks
-- **X-Content-Type-Options**: Prevents MIME type sniffing
-- **X-XSS-Protection**: Enables browser XSS filtering
-- **Referrer-Policy**: Controls referrer information disclosure
-
-### Operational Security
-- Regular review of exemption patterns
-- Monitor for bypass attempts in logs
-- Validate certificate automation functionality
-
-## Maintenance Procedures
-
-### Regular Tasks
-1. **Monthly**: Review exemption path usage in logs
-2. **Quarterly**: Validate security header policies
-3. **Annually**: Assess performance impact and optimization opportunities
-
-### Update Procedures
-1. Test configuration changes in development environment
-2. Deploy during maintenance windows
-3. Monitor logs for unexpected behavior
-4. Rollback plan: Remove iRule from virtual server
-
-## Limitations
-
-### Current Constraints
-- Case-sensitive pattern matching only
-- Shell-style wildcards only (no regex)
-- Static configuration (requires redeployment for changes)
-- F5 TCL limitations may affect complex patterns
-
-### Known Issues
-- Very large exemption lists may impact performance
-- Complex IPv6 configurations require testing
-- Some legacy F5 versions may have TCL syntax limitations
-
-## Support and Troubleshooting
-
-### Log Analysis
-Enable detailed logging during initial deployment:
-```tcl
-log local0. "Debug: Processing request for $uri"
-```
-
-Remove debug statements in production for performance.
-
-### Contact Information
-For technical issues:
-1. Review F5 documentation for TCL syntax
-2. Consult F5 DevCentral community forums
-3. Contact F5 support for platform-specific issues
-
-## Appendix: Complete Configuration Example
-
-```tcl
-# Example complete iRule with custom exemptions
-set exemption_paths {
-    "/.well-known/acme-challenge/*"
+    "/.well-known/acme-challenge/*" 
     "/health"
-    "/healthz" 
     "/status"
-    "/metrics"
+    "/ping"
     "/api/webhook/*"
-    "/api/monitoring/*"
+}
+foreach pattern $exemption_paths {
+    if {[string match $pattern $uri]} {
+        return
+    }
 }
 ```
 
-This configuration provides comprehensive coverage for most operational requirements while maintaining security through HTTPS redirection.
+We define a list of paths that should be exempt from the redirect, like `/.well-known/acme-challenge/*` for Let's Encrypt. If the request URI matches any of those patterns, we just return and let the request through without redirecting.
+
+### Add some security headers
+
+```tcl
+HTTP::respond $redirect_code Location $redirect_location \
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" \
+    X-Frame-Options "DENY" \
+    X-Content-Type-Options "nosniff" \
+    X-XSS-Protection "1; mode=block" \  
+    Referrer-Policy "strict-origin-when-cross-origin"
+```
+
+We can improve security by attaching a few key headers to the redirect response:
+
+- `Strict-Transport-Security` to enforce HTTPS
+- `X-Frame-Options` to prevent clickjacking
+- `X-Content-Type-Options` to stop MIME sniffing vulnerabilities
+- `X-XSS-Protection` to enable browser XSS filters
+- `Referrer-Policy` to limit sensitive info in the `Referer` header
+
+### Make the config user-friendly
+
+```tcl
+set redirect_code 308
+set https_port 443 
+set exemption_paths { ... }
+```
+
+Configuration options are pulled to the top of the iRule in a clearly marked section. This way admins can tweak the behavior without having to understand all the underlying logic.
+
+### Add some logging
+
+```tcl
+log local0. "$::IRULE_NAME v$::IRULE_VERSION: Exemption matched '$pattern' for $uri"
+log local0. "$::IRULE_NAME v$::IRULE_VERSION: Redirecting to $redirect_location"  
+```
+
+Logging statements use the standard syslog format, including the iRule name and version. This gives breadcrumbs to follow if troubleshooting a redirect issue.
+
+## Deploying HTTPS Redirect 2025
+
+### Basic Deployment 
+
+The default behavior is designed for simplicity and performance:
+
+1. Set `security_headers_enabled=0` in the iRule (this is the default)
+2. Apply the iRule to the HTTP virtual server only (usually port 80)
+
+That's it! With this setup:
+
+- HTTP requests will redirect to HTTPS
+- Exemption paths are honored 
+- HTTPS traffic goes directly to the pool without being processed by the iRule
+
+This matches the old *sys*https_redirect behavior, but with all the added benefits.
+
+### Full Deployment with Security Headers
+
+For the most security, you can enable the headers on both redirect responses and direct HTTPS traffic:
+
+1. Set `security_headers_enabled=1` in the iRule 
+2. Apply the iRule to *both* the HTTP and HTTPS virtual servers
+
+Now the iRule will:
+
+- Add security headers to HTTP redirect responses
+- Allow HTTPS requests to pass through to the pool
+- Add the same security headers to all HTTPS responses
+
+## Compatibility and Requirements
+
+HTTPS Redirect 2025 has been tested on BIG-IP 17.5 but should work on all [supported versions of BIG-IP](https://my.f5.com/manage/s/article/K5903).
+
+The full feature set requires an HTTPS virtual server and client SSL profile. Legacy SSL profiles are supported.
+
+No special licensing is required beyond the base BIG-IP LTM.
+
+## Getting Help
+
+For configuration and troubleshooting help:
+
+- DevCentral's [F5 iRules forum](https://devcentral.f5.com/irules) 
+- [Open a GitHub issue](https://github.com/tmarfil/f5-https-redirect-2025/issues)
+
