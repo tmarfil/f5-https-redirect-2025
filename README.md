@@ -2,11 +2,11 @@
 
 F5's old [**_sys_https_redirect**](https://my.f5.com/manage/s/article/K10090418) iRule is simple and gets the job done, but it's starting to show its age. It has some issues handling today's web apps:
 
-1. **It always sends a 302 redirect.** This changes POST requests to GET, breaking things like form submissions. We really want to use a 308 to preserve the request method.
+1. **It always sends a 302 redirect.** This changes POST requests to GET, breaking things like form submissions. We should use a 308 insead to preserve the request method.
 2. **It chokes on IPv6 host headers.** If you have an IPv6 address like `[2001:db8::1]:8080`, the `getfield` command used to parse out the host will fail. We need a smarter way to handle that. 
 3. **There's no way to make exceptions.** Sometimes you need HTTP for things like Let's Encrypt validation or health checks. The iRule redirects everything to HTTPS unconditionally.
-4. **It doesn't set any security headers.** The redirect response is pretty bare-bones. It's a missed chance to enable some extra protections.
-5. **Everything is hardcoded.** Want to change something? You have to edit the iRule directly. Not the most admin-friendly.
+4. **It doesn't set any security headers.** The redirect response is bare-bones. It's a missed chance to enable some extra protections.
+5. **Everything is hardcoded.** Want to change something? There are no editable parameters. Not the most admin-friendly.
 6. **Zero visibility.** If something isn't working right, good luck figuring out why. The iRule doesn't log anything for troubleshooting.
 
 ## How HTTPS Redirect 2025 solves this
@@ -106,11 +106,11 @@ That's it! With this setup:
 - Exemption paths are honored 
 - HTTPS traffic goes directly to the pool without being processed by the iRule
 
-This matches the old *sys*https_redirect behavior, but with all the added benefits.
+This matches the old **_sys_https_redirect** behavior, but with all the added benefits.
 
 ### Full Deployment with Security Headers
 
-For the most security, you can enable the headers on both redirect responses and direct HTTPS traffic:
+If you want to include security headers in the response, you can enable the headers on both redirect responses _and_ direct HTTPS traffic:
 
 1. Set `security_headers_enabled=1` in the iRule 
 2. Apply the iRule to *both* the HTTP and HTTPS virtual servers
@@ -123,7 +123,7 @@ Now the iRule will:
 
 ## Compatibility and Requirements
 
-HTTPS Redirect 2025 has been tested on BIG-IP 17.5 but should work on all [supported versions of BIG-IP](https://my.f5.com/manage/s/article/K5903).
+HTTPS Redirect 2025 has been tested on BIG-IP 17.5.0 but should work on all [supported versions of BIG-IP](https://my.f5.com/manage/s/article/K5903).
 
 The full feature set requires an HTTPS virtual server and client SSL profile. Legacy SSL profiles are supported.
 
@@ -133,6 +133,6 @@ No special licensing is required beyond the base BIG-IP LTM.
 
 For configuration and troubleshooting help:
 
-- DevCentral's [F5 iRules forum](https://devcentral.f5.com/irules) 
+- [F5 DevCentral](https://community.f5.com/) 
 - [Open a GitHub issue](https://github.com/tmarfil/f5-https-redirect-2025/issues)
 
